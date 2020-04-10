@@ -1,0 +1,238 @@
+---
+title: "Voteview Analysis"
+author: "Vivian Zhang"
+date: "4/10/2020"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(janitor)
+library(skimr)
+library(ggplot2)
+library(permutations)
+library(broom)
+library(gt)
+library(tidyverse)
+
+```
+
+```{r loading data}
+
+voteview <- read_csv("data/HSall_members.csv",
+                     col_types=cols(
+                       .default = col_double(),
+                       chamber = col_character(),
+                       state_abbrev = col_character(),
+                       bioname = col_character(),
+                       bioguide_id = col_character(),
+                       conditional = col_logical()
+                     )) %>%
+  clean_names()
+
+```
+
+```{r 1A}
+
+# I filter for only senate and house, only the 116th Congress, and only
+# Republicans and Democrats. I create columns for age and party (the latter
+# using case_when). I created a percentile rank column using the percent_rank()
+# command. However, this is multiplied by 100 becuase percentiles should cover
+# the full range between 0 and 100, and not just cover the range from 0 to 1.
+
+A1 <- voteview %>%
+  filter(chamber == "Senate" | chamber == "House") %>%
+  filter(congress == 116) %>%
+  filter(party_code == 100 | party_code == 200) %>%
+  mutate(party = case_when(
+    party_code == 100 ~ "democrats",
+    party_code == 200 ~ "republicans"
+  )) %>%
+  mutate(age = (2019 - born)) %>%
+  mutate(nominate_percentile = percent_rank(nominate_dim1) * 100)
+
+skim(A1, c(nominate_percentile, age))
+
+```
+
+
+```{r 1B first}
+
+# total_dems <- A1 %>%
+#   filter(party == "democrats") %>%
+#   count() %>%
+#   pull(n)
+# 
+# total_reps <- A1 %>%
+#   filter(party == "republicans") %>%
+#   count() %>%
+#   pull(n)
+
+A1 <- A1 %>%
+  mutate(party = case_when(
+    party == "democrats" ~ "Democrat",
+    party == "republicans" ~ "Republican"
+  ))
+
+ggplot(A1, aes(x = age, fill=party)) +
+  geom_histogram(binwidth = 1) +
+  scale_fill_manual("Party", values=c("#69b3a2", "#404080")) +
+  labs(
+    title = "Number of Senators and House Representatives in Each Age Group",
+    subtitle = "Comparing Democrats and Republicans",
+    caption = "**Data from VoteView",
+    x = "Age",
+    y = "Count"
+  ) +
+  theme_classic()
+
+```
+
+```{r 1B second}
+
+# It isn't surprising that republicans consistently score in the higher
+# percentile range while democrats consistently score in the lower half. The two
+# overlap a bit around the 50th percentile, but otherwise the divide is pretty
+# stark.
+
+ggplot(A1, aes(x = nominate_percentile, fill=party)) +
+  geom_histogram(binwidth = 2) +
+  scale_fill_manual("Party", values=c("#69b3a2", "#404080")) +
+  labs(
+    title = "Percentile Rank on the Primary Dimension of Liberal vs Conservative",
+    subtitle = "Where a Higher Percentile Means a More Conservative Position",
+    caption = "**Data from VoteView",
+    x = "Nominate Percentile",
+    y = "Count"
+  ) +
+  theme_classic()
+
+```
+
+
+```{r 1C}
+
+# This simple tool within summarize called cor() gets us the right answer.
+
+A1 %>%
+  summarize(correlation = cor(age, nominate_percentile)) %>%
+  pull(correlation)
+
+```
+
+
+```{r 1D}
+
+# On the outside, we set the values for party, which will later be passed in
+# using scale_color_manual. Our ggplot's aesthetics include color = party
+# because I want the parties on the side legend. I use geom_smooth to show the
+# lines of best fit. Se = FALSE turns of the display of the confidence interval
+# around smooth. Beyond this, I simply change the labels to reflect this graph.
+
+party <- c("Republican" = "red", "Democrat" = "blue")
+
+ggplot(A1, aes(x = age, y = nominate_percentile, colour = party)) +
+  geom_point() +
+  geom_smooth(method = "glm", se = FALSE, colour = "black") +
+  geom_smooth(aes(colour = party), method = "glm", se = FALSE) +
+  scale_color_manual("Party", values = party) +
+  labs(
+    title = "Relationship Between Age and DW Nominate Percentile",
+    subtitle = "Higher scores represent more conservative positions",
+    x = "Age",
+    y = "Percentile Rank (DW Nominate)"
+  ) +
+  theme_classic()
+
+```
+
+
+```{r 2A}
+
+# Filter for only Democrats now to make data simpler.
+
+Q2 <- A1 %>%
+  filter(party == "Democrat")
+
+# Using lm, I do a 3 part procedure similar to the one in the textbook. We run a
+# regression of nominate_percentile on age, piping in the data from above. Then,
+# we run tidy for confidence intervals and select the columns to display.
+# Passing in Gt, I change the titles and column names.
+
+Q2 %>%
+  lm(nominate_percentile ~ age, data = .) %>%
+  tidy(conf.int = TRUE) %>%
+  select(term, estimate, conf.low, conf.high) %>%
+  gt() %>%
+  tab_header(
+    title = "Effect of Age on DW Nominate Percentile"
+  ) %>%
+  tab_spanner(
+    label = "Higher percentile suggests more conservative",
+    columns = vars(
+      term, estimate, conf.low, conf.high
+    )
+  ) %>%
+  cols_label(
+    term = "Variable",
+    estimate = "Estimate",
+    conf.low = "Lower Bound",
+    conf.high = "Upper Bound"
+  )
+  
+```
+
+
+```{r Q3 data}
+
+# I filter for Members of Congress, for democrats, then mutate to create the
+# nominate_percentile column. I mutate to find age. Given that the first
+# congress was 1787, then we can find out age if we add 2 * the congress number
+# plus the first year minus 2 to find the year we are in for that given
+# congress. The age is just that number minus the year the Member of Congress
+# was born. I group_by congress in order to nest because in the graph, the
+# numbers are clearly grouped by the congress number. I mutate to create a
+# column called mod, which contains the result of my mapping with the lm
+# function. I take the results, run tidy on it, and pull the estimate and
+# std.error values from the nested tibbles. Roughly 95% of values fall between +
+# or - 1.96 standard deviations of the mean. That's what we can use to find the
+# upper and lower bounds of our confidence interval for our estimate.
+
+Q3 <- voteview %>%
+  filter(chamber == "Senate" | chamber == "House") %>%
+  filter(party_code == 100) %>%
+  mutate(nominate_percentile = percent_rank(nominate_dim1) * 100) %>%
+  mutate(age = (1787 + 2*congress)- born) %>%
+  group_by(congress) %>%
+  nest() %>%
+  mutate(mod = map(data, ~ lm(nominate_percentile ~ age, data = .)),
+         reg_results = map(mod, ~ tidy(.)),
+         coef = map_dbl(reg_results, ~ filter(., term == "age") %>% pull(estimate)),
+         se = map_dbl(reg_results, ~ filter(., term == "age") %>% pull(std.error))) %>%
+  mutate(lower = coef - 1.96 * se) %>%
+  mutate(upper = coef + 1.96 * se)
+
+```
+
+```{r Q3 ggplot}
+
+# Created a ggplot with the instructions from the html.
+# Using errorbar, I was able to generate the lines
+# around my geom_point plot.
+# I played with different colors and made sure to 
+# use \n to get my title and subtitle to match the sample.
+
+ggplot(Q3, aes(x = congress, y = coef)) +
+  geom_point(color = "blue") +
+  geom_errorbar(aes(x = congress, ymin=lower, ymax = upper), color = "blue") +
+  theme_classic() +
+  labs(
+    title = "Average Treatment Effect of Age on Conservatism \n Among Democrats Over Time",
+    subtitle = "Scores use DW Nominate Dimension 1 \n 95% Confidence Interval",
+    x = "Congress",
+    y = "Estimate"
+  )
+
+```
